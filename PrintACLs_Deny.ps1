@@ -247,12 +247,12 @@ if (-not $blnRmtConnStatusDisabledStatus -and -not $RunPrintServer) {
 
 
 ## 3. Check Spooler Status
-If ($blnFolderLockedDown -and $blnRmtConnStatusDisabledStatus -and $SpoolerServiceStatus -eq "Running") {
+If ($blnFolderLockedDown -and $blnRmtConnStatusDisabledStatus -and $SpoolerService.Status -eq "Running") {
   # nothing to see here - leave
   write-host "`t[3] All settings are good - Spooler running" -foreground white
   sleep 5
   exit
-} elseif ($blnFolderLockedDown -and $blnRmtConnStatusDisabledStatus -and $SpoolerServiceStatus -ne "Running") {
+} elseif ($blnFolderLockedDown -and $blnRmtConnStatusDisabledStatus -and $SpoolerService.Status -ne "Running") {
   # Everything checks out - but spooler not running - lets start it.
   write-host "`t[3] All settings are good - Start Spooler" -foreground white
   EnableSpooler $SpoolerService
