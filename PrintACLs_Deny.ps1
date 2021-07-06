@@ -140,7 +140,8 @@ function RestartSpooler {
 function GetSpoolDriverFolderLockdown {
   param ($ACLs)
   $hasACL = $false
-  $hasACL = ($ACLs.Access | ?{ $_.AccessControlType -eq "Deny" -and $_.IdentityReference -eq "NT AUTHORITY\SYSTEM"}).count -ge 1
+  # $hasACL = ($ACLs.Access | ?{ $_.AccessControlType -eq "Deny" -and $_.IdentityReference -eq "NT AUTHORITY\SYSTEM"}).count -ge 1
+  $hasACL = @($ACLs.Access | ?{ ($_.AccessControlType -eq "Deny") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM")}).count -ge 1
   if ($hasACL) {
     return $true
   } else {
@@ -164,7 +165,8 @@ function SetSpoolDriverFolderLockdown {
 
 write-host "Script Start --"
 ## 1. Valiate Spool Driver Folder Locked Down
-$Acl = Get-Acl $AclPath
+# $Acl = Get-Acl $AclPath
+$Acl = (Get-Item $AclPath).GetAccessControl('Access')
 $blnFolderLockedDown = GetSpoolDriverFolderLockdown $Acl
 
 if (-not $blnFolderLockedDown) {
@@ -175,7 +177,8 @@ if (-not $blnFolderLockedDown) {
 
   # Refresh
   write-host "`t`tValidating..." -foreground Yellow
-  $Acl = Get-Acl $AclPath
+  # $Acl = Get-Acl $AclPath
+  $Acl = (Get-Item $AclPath).GetAccessControl('Access')
   $blnFolderLockedDown = GetSpoolDriverFolderLockdown $Acl
   if ($blnFolderLockedDown) {
 	write-host "`t`tFolder Lock Down Status: $blnFolderLockedDown" -foreground Green
