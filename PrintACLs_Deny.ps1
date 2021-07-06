@@ -68,6 +68,9 @@ $AclPath = "C:\Windows\System32\spool\drivers"
 ##########################################################################
 # Get / Set disable Remote Inbound connections
 function GetSpoolRmtConnStatusDisabled {
+  if ((test-path "HKLM:\Software\Policies\Microsoft\Windows NT\") -and (-not (test-path "HKLM:\Software\Policies\Microsoft\Windows NT\Printers\"))){
+    return $False
+  }
   $registryValue = (Get-ItemProperty -Path "HKLM:\Software\Policies\Microsoft\Windows NT\Printers" -Name "RegisterSpoolerRemoteRpcEndPoint").RegisterSpoolerRemoteRpcEndPoint
   if ($registryValue -eq 2) {
     return $true
@@ -140,20 +143,119 @@ function RestartSpooler {
 function GetSpoolDriverFolderLockdown {
   param ($ACLs)
   $hasACL = $false
-  # $hasACL = ($ACLs.Access | ?{ $_.AccessControlType -eq "Deny" -and $_.IdentityReference -eq "NT AUTHORITY\SYSTEM"}).count -ge 1
-  $hasACL = @($ACLs.Access | ?{ ($_.AccessControlType -eq "Deny") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM")}).count -ge 1
+
+  ## BAD States to fix
+  # If TrueSec - fail, so it can be removed.
+  $hasACL = @($ACLs.Access | ?{ ($_.AccessControlType -eq "Deny") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM") -and ($_.FileSystemRights -eq "Modify")}).count -ge 1
   if ($hasACL) {
-    return $true
+    return $false
   } else {
-    # Needs ACL applied - continue
-	return $false
+    # No truesec rule to remove
   }	
+
+  # Remove Full Control because it allows MODIFY!
+  $hasACL = @($ACLs.Access | ?{ ($_.AccessControlType -eq "Allow") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM") -and ($_.FileSystemRights -eq "FullControl")}).count -ge 1
+  if ($hasACL) {
+    return $false
+  } else {
+    # No Full Control rule to remove
+  }	
+  
+  # check for inheritOnly ACLs
+  $hasACL = @($ACLs.Access | ?{ ($_.PropagationFlags -eq "InheritOnly") -and ($_.AccessControlType -eq "Allow") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM")}).count -ge 1
+  if ($hasACL) {
+    return $false
+  } else {
+    # No Full Control rule to remove
+  }	
+  
+  ## GOOD States - zero results means not applied
+  $hasACL = @($ACLs.Access | ?{ ($_.AccessControlType -eq "Deny") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM") -and ($_.FileSystemRights -eq "Write")}).count -eq 0
+  if ($hasACL) {
+	# Needs ACL applied - return false
+    return $false
+  } else {
+    # Continue    
+  }	
+  
+  return $true
 }
 
 function SetSpoolDriverFolderLockdown {
   param ($ACLs)
-  $Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("System", "Modify", "ContainerInherit, ObjectInherit", "None", "Deny")
-  $Acl.AddAccessRule($Ar)
+
+  #######################
+  # Remove prior fixes, OS inconsistencies...
+  #######################
+  
+  # Original TrueSec one - had issues on spooler restart loading drivers on servers
+  $tempACL = ""
+  $tempACL = $ACLs.Access | ?{ ($_.AccessControlType -eq "Deny") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM") -and ($_.FileSystemRights -eq "Modify")}
+  if ($tempACL -ne "" -and @($tempACL).count -ge 1) {
+    $ACLs.RemoveAccessRule($tempACL) | out-null
+	Write-host "`t`t Removed TrustedSec ACL"
+  } else {
+    # No truesec rule to remove
+  }
+  
+  # Read - conflict: Propagation flags - In the case that this would persist as inheritOnly, would still break printers...
+  $tempACL = ""
+  $tempACL = $ACLs.Access | ?{ ($_.PropagationFlags -eq "InheritOnly") -and ($_.AccessControlType -eq "Allow") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM")}
+  if ($tempACL -ne "" -and @($tempACL).count -ge 1) {
+    # MODIFY - ALLOW Read
+    $ACLs.SetAccessRule($tempACL) | out-null
+    $FileSystemRights  = "ReadAndExecute, Synchronize"
+    $AccessControlType = "Allow"
+    $IdentityReference = "NT AUTHORITY\SYSTEM"
+    $InheritanceFlags  = "ContainerInherit, ObjectInherit"
+    $PropagationFlags  = "None"
+    $Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($IdentityReference, $FileSystemRights, $InheritanceFlags,$PropagationFlags, $AccessControlType)
+    $ACLs.SetAccessRule($Ar)
+	Write-host "`t`t Removed InheritOnly Read"
+  } else {
+    # Add - ALLOW Read
+    $FileSystemRights  = "ReadAndExecute, Synchronize"
+    $AccessControlType = "Allow"
+    $IdentityReference = "NT AUTHORITY\SYSTEM"
+    $InheritanceFlags  = "ContainerInherit, ObjectInherit"
+    $PropagationFlags  = "None"
+    $Ar = New-Object System.Security.AccessControl.FileSystemAccessRule($IdentityReference, $FileSystemRights, $InheritanceFlags,$PropagationFlags, $AccessControlType)
+    $ACLs.AddAccessRule($Ar)
+  }
+
+  #######################
+  # Now Rebuild
+  #######################
+  
+  # Add - DENY Write
+  $FileSystemRights  = "Write"
+  $AccessControlType = "Deny"
+  $IdentityReference = "NT AUTHORITY\SYSTEM"
+  $InheritanceFlags  = "ContainerInherit, ObjectInherit"
+  $PropagationFlags  = "None"
+  $Ar2 = New-Object System.Security.AccessControl.FileSystemAccessRule($IdentityReference, $FileSystemRights, $InheritanceFlags,$PropagationFlags, $AccessControlType)
+  $ACLs.AddAccessRule($Ar2)
+
+  # Remove - ALLOW Generic rights
+  $tempACL = ""
+  $tempACL = $ACLs.Access | ?{ ($_.AccessControlType -eq "Allow") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM") -and ($_.FileSystemRights -eq "268435456")}
+  if ($tempACL -ne "" -and @($tempACL).count -ge 1) {
+    $ACLs.RemoveAccessRule($tempACL) | out-null
+	Write-host "`t`t Removed Generic Read / Write"
+  } else {
+    # No Full Control rule to remove
+  }
+
+  #  Remove - Full Control because it allows MODIFY!
+  $tempACL = ""
+  $tempACL = $ACLs.Access | ?{ ($_.AccessControlType -eq "Allow") -and ($_.IdentityReference -eq "NT AUTHORITY\SYSTEM") -and ($_.FileSystemRights -eq "FullControl")}
+  if ($tempACL -ne "" -and @($tempACL).count -ge 1) {
+    $ACLs.RemoveAccessRule($tempACL) | out-null
+	Write-host "`t`t Removed Full Control ACL"
+  } else {
+    # No Full Control rule to remove
+  }
+  
   Set-Acl $AclPath $ACLs  
 }
 ##########################################################################
